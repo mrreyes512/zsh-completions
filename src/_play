@@ -1,182 +1,183 @@
 #compdef play
 # ------------------------------------------------------------------------------
+# Copyright (c) 2011 Github zsh-users - http://github.com/zsh-users
+# All rights reserved.
+#
+# Redistribution and use in source and binary forms, with or without
+# modification, are permitted provided that the following conditions are met:
+#     * Redistributions of source code must retain the above copyright
+#       notice, this list of conditions and the following disclaimer.
+#     * Redistributions in binary form must reproduce the above copyright
+#       notice, this list of conditions and the following disclaimer in the
+#       documentation and/or other materials provided with the distribution.
+#     * Neither the name of the zsh-users nor the
+#       names of its contributors may be used to endorse or promote products
+#       derived from this software without specific prior written permission.
+#
+# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
+# ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+# WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+# DISCLAIMED. IN NO EVENT SHALL ZSH-USERS BE LIABLE FOR ANY
+# DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+# (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+# LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+# ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+# (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+# SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+# ------------------------------------------------------------------------------
 # Description
 # -----------
 #
-#  Completion script for Play! framework 1.2.2 (http://www.playframework.org).
+#  Completion script for play v2.0.0.2 (http://ansible.org)
 #
 # ------------------------------------------------------------------------------
 # Authors
 # -------
 #
-#  * Julien Nicoulaud <julien.nicoulaud@gmail.com>
-#  * Mario Fernandez (https://github.com/sirech)
+#  * Romain Bossart (https://github.com/bosr)
+#  * Adam Stevko (https://github.com/xen0l)
 #
 # ------------------------------------------------------------------------------
+#
+# Needs either ANSIBLE_HOSTS or /etc/ansible/hosts on linux
+# (or /usr/local/etc/ansible/hosts on macOS)
+#
+# Note 1: the following gist (https://gist.github.com/15ed54a438a36d67fd99.git)
+# has some files to help improve the hostfile shell parsing
+#
+# Note 2: I tried to use `_arguments --`, but the output of `ansible --help`
+# is not parsed entirely correctly, and anyway no modules or host would available.
+#
+
+# play zsh completion
+#
+__host_file_location () {
+  # find the location of the host file:
+  # 1. check $ANSIBLE_HOSTS
+  # 2. else check /etc/ansible/hosts or /usr/local/etc/...
+  #    (depending on platform)
+  #
+
+  [[ "$OSTYPE" == darwin* ]] && FALLBACK="/usr/local/etc/ansible/hosts"
+  [[ "$OSTYPE" == linux* ]] && FALLBACK="/etc/ansible/hosts"
+  HOST_FILE=${ANSIBLE_HOSTS:=${FALLBACK}}
+  [[ -f ${HOST_FILE} ]] || HOST_FILE="$PWD/ansible/inventory/hosts"
+  [[ -f ${HOST_FILE} ]] || HOST_FILE=/dev/null
+
+  echo ${HOST_FILE}
+}
+
+__ll_group_list () {
+  # parses the ini hostfile for groups only: [...]
+  HOST_FILE=$(__host_file_location)
+
+  local -a group_list
+  group_list=$(command \
+      cat ${HOST_FILE} \
+      | awk '$1 ~ /^\[.*\]$/ && !/=/ && !/:vars/ \
+        { gsub(/[\[\]]/, "", $1); gsub(/:children/, "", $1) ; print $1 }' \
+      | uniq )
+
+  echo ${group_list}
+}
 
 
-_play() {
-  local context curcontext="$curcontext" state line
+__host_list ()
+{
+  # parses the ini hostfile for hosts only
+  # but then has to remove all group occurrences
+  HOST_FILE=$(__host_file_location)
+
+  # this will also contain groups if they are referenced in other groups
+  local -a mixed_host_list
+  mixed_host_list=$(command \
+    cat ${HOST_FILE} \
+    | awk 'NF && $1 !~ /[\[:=]/ { print $1 }' \
+    | sort | uniq)
+
+  # compute set difference h1 - h2
+  local -a h1 h2 host_list
+  h1=${mixed_host_list}
+  h2=$(__ll_group_list)
+  host_list=($(command \
+    sort <(echo $h1) <(echo $h2) <(echo $h2) \
+    | uniq -u \
+    | paste -s -d ' ' - )
+  )
+
+  _wanted application expl 'hosts' compadd ${host_list}
+
+  # method that delegates to ansible (slow)
+  # _wanted application expl 'hosts' compadd $(command ansible \
+  #                                             all --list-hosts\
+  #                                             2>/dev/null)
+}
+
+__group_list ()
+{
+  gl=($(command echo $(__ll_group_list) | paste -s -d ' ' - )) # 'a\nb\nc' -> (a b c)
+  _wanted application2 expl 'groups' compadd $gl
+}
+
+
+
+_play ()
+{
+  local curcontext="$curcontext" state line
   typeset -A opt_args
 
-  local ret=1
-
-  _arguments -C \
-    '1: :_play_cmds' \
-    '*::arg:->args' \
-  && ret=0
+  _arguments -C -W \
+    "1:playbook yml file:_files -g '*.yml|*.yaml'"\
+    '--ask-become-pass[ask for privilege escalation password]'\
+    "(-k --ask-pass)"{-k,--ask-pass}"[ask for connection password]"\
+    '--ask-su-pass[ask for su password (deprecated, use become)]'\
+    "(-K --ask-sudo-pass)"{-K,--ask-sudo-pass}"[ask for sudo password (deprecated, use become)]"\
+    '--ask-vault-pass[ask for vault password]'\
+    "(-b --become)"{-b,--become}"[run operations with become (nopasswd implied)]"\
+    '--become-method[privilege escalation method to use (default=sudo)]:method:(sudo su pbrun pfexec runas doas)'\
+    '--become-user[run operations as this user (default=root)]:user:(USER)'\
+    "(-C --check)"{-C,--check}"[don't make any changes]"\
+    "(-c --connection)"{-c,--connection}"[CONNECTION connection type to use (default=smart)]:connection type:(smart ssh local chroot)"\
+    "(-D --diff)"{-D,--diff}"[when changing (small files and templates, show the diff in those. Works great with --check)]"\
+    "(-e --extra-vars)"{-e,--extra-vars}"[EXTRA_VARS set additional variables as key=value or YAML/JSON]:extra vars:(EXTRA_VARS)"\
+    '--flush-cache[clear the fact cache]'\
+    '--force-handlers[run handlers even if a task fails]'\
+    "(-f --forks)"{-f,--forks}"[FORKS number of parallel processes to use (default=5)]:forks:(5)"\
+    "(-h --help)"{-h,--help}"[help message]"\
+    "(-i --inventory-file)"{-i,--inventory-file}"[INVENTORY specify inventory host file]:inventory file:_files"\
+    "(-l --limit)"{-l,--limit}"[SUBSET further limit selected hosts to an additional pattern]:subset pattern:->pattern"\
+    '--list-hosts[outputs a list of matching hosts. Does not execute anything else]'\
+    '--list-tags[list all available tags]'\
+    '--list-tasks[list all tasks that would be executed]'\
+    "(-M --module-path)"{-M,--module-path}"[MODULE_PATH specify path to module library (default=None)]:module path:_files -/"\
+    '--new-vault-password-file[new vault password file for rekey]:new vault password file:_files'\
+    '--output[output file name for encrypt or decrypt; use - for stdout]:output file:_files'\
+    '--private-key[PRIVATE_KEY_FILE use this file to authenticate the connection]:private key file:_files'\
+    '--scp-extra-args[specify extra arguments to pass to scp only]'\
+    '--sftp-extra-args[specify extra arguments to pass to sftp only]'\
+    "--skip-tags[SKIP_TAGS only run plays and tasks whose tags do not match these values]:skip tags:(SKIP_TAGS)"\
+    '--ssh-common-args[specify common arguments to pass to sftp/scp/ssh]'\
+    '--ssh-extra-args[specify extra arguments to pass to ssh only]'\
+    "--start-at-task[START_AT start the playbook at the task matching this name]:name:(TASK_NAME)"\
+    '--step[one-step-at-a-time: confirm each task before running]'\
+    "(-S --su)"{-S,--su}"[run operations with su (deprecated, use become)]"\
+    "(-R --su-user)"{-R,--su-user}"[SU_USER run operations with su as this user (default=root) (deprecated, use become)]:su user:(root)"\
+    "(-s --sudo)"{-s,--sudo}"[run operations with sudo (nopasswd) (deprecated, use become)]"\
+    "(-U --sudo-user)"{-U,--sudo-user}"[SUDO_USER desired sudo user (default=root) (deprecated, use become)]:su user:(root)"\
+    '--syntax-check[perform a syntax check on the playbook, but do not execute it]'\
+    "(-t --tags)"{-t,--tags}"[TAGS only run plays and tasks gagged with these values]:task tags:(TAGS)"\
+    "(-T --timeout)"{-T,--timeout}"[TIMEOUT override the SSH timeout (s) (default=10)]:ssh timeout:(10)"\
+    "(-u --user)"{-u,--user}"[REMOTE_USER connect as this user (default=${USER})]:connect as user:(${USER})"\
+    "--vault-password-file[VAULT_PASSWORD_FILE vault password file]:vault password file:_files"\
+    "(-v --verbose)"{-v,--verbose}"[verbose mode (-vvv for more, -vvvv to enable connection debugging)]"\
+    "--version[show program's version number and exit]"\
 
   case $state in
-    (args)
-      curcontext="${curcontext%:*:*}:play-cmd-$words[1]:"
-      case $line[1] in
-        (build-module|list-modules|lm|check|id)
-          _message 'no more arguments' && ret=0
-        ;;
-        (dependencies|deps)
-          _arguments \
-            '1:: :_play_apps' \
-            '(--debug)--debug[Debug mode (even more informations logged than in verbose mode)]' \
-            '(--jpda)--jpda[Listen for JPDA connection. The process will  suspended until a client is plugged to the JPDA port.]' \
-            '(--sync)--sync[Keep lib/ and modules/ directory synced. Delete unknown dependencies.]' \
-            '(--verbose)--verbose[Verbose Mode]' \
-          && ret=0
-        ;;
-        (clean|javadoc|jd|out|pid|secret|stop)
-          _arguments '1:: :_play_apps' && ret=0
-        ;;
-        (help)
-          _arguments '1: :_play_cmds -F "(cp deps ec idea jd st lm nb nm help antify evolutions evolutions:apply evolutions:markApplied evolutions:resolve)"' && ret=0
-        ;;
-        (status|st)
-          _arguments \
-            '1:: :_play_apps' \
-            '(--url)--url[If you want to monitor an application running on a remote server, specify the application URL using this option]:URL:_urls' \
-            '(--secret)--secret[You can provide your own secret key using this option]:Secret key' \
-          && ret=0
-        ;;
-        (new)
-          _arguments \
-            '1: :_play_apps' \
-            '(--with)--with[Automatically enable this set of module for the newly created application]:Modules list:_play_modules_list' \
-          && ret=0
-        ;;
-        (install)
-          _arguments '1:Play! module:_play_modules_dash_versions' && ret=0
-        ;;
-        (new-module)
-          _arguments '1:Module directory:_files -/' && ret=0
-        ;;
-        (test|precompile|run|start|war|auto-test|classpath|cp|eclipsify|ec|idealize|idea|modules|netbeansify|nb)
-          local cmd_args; cmd_args=(
-            '1:: :_play_apps'
-            '(--deps)--deps[Resolve and install dependencies before running the command]'
-          )
-          case $line[1] in
-            (precompile|run|start|restart|war)
-              local app_dir="$line[2]"
-              [[ -d "$app_dir" ]] || app_dir=.
-              [[ -f "$app_dir/conf/application.conf" ]] && cmd_args+=('--'${(u)${(M)$(<$app_dir/conf/application.conf):#%*}%%.*}'[Use this ID to run the application (override the default framework ID)]')
-            ;|
-            (test|run)
-              cmd_args+=('(-f)-f[Disable the JPDA port checking and force the jpda.port value]')
-            ;|
-            (war)
-              cmd_args+=(
-                '(-o --output)'{-o,--output}'[The path where the WAR directory will be created. The contents of this directory will first be deleted]:output directory:_files -/'
-                '(--zip)--zip[By default, the script creates an exploded WAR. If you want a zipped archive, specify the --zip option]'
-                '(--exclude)--exclude[Excludes a list of colon separated directories]:excluded directories list:_play_colon_dirs_list'
-              )
-            ;|
-            (test|run|start|restart|war)
-              cmd_args+=('*:Java option')
-            ;;
-          esac
-          _arguments "$cmd_args[@]" && ret=0
-        ;;
-        *)
-          _call_function ret _play_cmd_$words[1] && ret=0
-          (( ret )) && _message 'no more arguments'
-        ;;
-      esac
-    ;;
+    pattern)
+      _arguments '*:feature:__host_list'
+      _arguments '*:feature:__group_list'
+      ;;
   esac
-}
-
-# FIXME Completes only core commands, some modules add commands too (eg Maven). Where do we get them ?
-# FIXME Parse 'play help' and 'play help <command>' (for aliases) instead of hard-coding.
-(( $+functions[_play_cmds] )) ||
-_play_cmds() {
-  local commands; commands=(
-    'antify:Create a build.xml file for this project'
-    'auto-test:Automatically run all application tests'
-    'build-module:Build and package a module'
-    'check:Check for a release newer than the current one'
-    {classpath,cp}':Display the computed classpath'
-    'clean:Delete temporary files (including the bytecode cache)'
-    {dependencies,deps}':Resolve and retrieve project dependencies'
-    {eclipsify,ec}':Create all Eclipse configuration files'
-    'evolutions:Run the evolution check'
-    'evolutions\:apply:Automatically apply pending evolutions'
-    'evolutions\:mark:AppliedMark pending evolutions as manually applied'
-    'evolutions\:resolve:Resolve partially applied evolution'
-    'help:Display help on a specific command'
-    'id:Define the framework ID'
-    {idealize,idea}':Create all IntelliJ Idea configuration files'
-    'install:Install a module'
-    {javadoc,jd}':Generate your application Javadoc'
-    {list-modules,lm}':List modules available from the central modules repository'
-    'modules:Display the computed modules list'
-    {netbeansify,nb}':Create all NetBeans configuration files'
-    'new:Create a new application'
-    {new-module,nm}':Create a module'
-    'out:Follow logs/system.out file'
-    'pid:Show the PID of the running application'
-    'precompile:Precompile all Java sources and templates to speed up application start-up'
-    'restart:Restart the running application'
-    'run:Run the application in the current shell'
-    'secret:Generate a new secret key'
-    'start:Start the application in the background'
-    {status,st}':Display the running application status'
-    'stop:Stop the running application'
-    'test:Run the application in test mode in the current shell'
-    'war:Export the application as a standalone WAR archive'
-  )
-  _describe -t commands 'Play! command' commands "$@"
-}
-
-(( $+functions[_play_apps] )) ||
-_play_apps() {
-  _wanted application expl 'Play! application directory' _files -/
-}
-
-(( $+functions[_play_modules] )) ||
-_play_modules() {
-  local modules; modules=(${(ps:,:)${${${(S)${(f)$(_call_program modules $service list-modules)}//\]*\[/,}%%\]*}##*\[}})
-  _describe -t modules 'Play! module' modules "$@"
-}
-
-(( $+functions[_play_modules_dash_versions] )) ||
-_play_modules_dash_versions() {
-  local ret=1
-  if compset -P '*-'; then
-    local versions; versions=(${(ps:,:)${${${${${(f)$(_call_program versions $service list-modules)}##*${IPREFIX%-}\]}#*Versions:}%%"~"*}//[[:space:]]/}})
-    _describe -t module-versions "${IPREFIX%-} module versions" versions && ret=0
-  else
-    _wanted modules expl 'Play! module' _play_modules -qS- && ret=0
-  fi
-}
-
-(( $+functions[_play_modules_list] )) ||
-_play_modules_list() {
-  compset -P '*,'; compset -S ',*'
-  _wanted module-list expl 'Play! modules list' _play_modules -qS,
-}
-
-(( $+functions[_play_colon_dirs_list] )) ||
-_play_colon_dirs_list() {
-  compset -P '*:'; compset -S ':*'
-  _wanted directories-list expl 'Directories list' _files -/ -qS:
 }
 
 _play "$@"
